@@ -1,0 +1,65 @@
+#!/usr/bin/python
+
+import errno
+import os
+import socket
+import sys
+import syslog
+
+MESSAGE_VERS = "GMS:0"
+MESSAGE_SIZE = 2048
+MESSAGE_FILE = '/var/gms/Message'
+
+addr = None
+
+def die(reason,exit_status=1):
+    syslog.syslog(syslog.LOG_INFO, reason)
+    sys.exit(exit_status)
+
+def setup_syslog():
+    syslog.openlog('pymessaged', syslog.LOG_PID, syslog.LOG_DAEMON)
+    
+def setup_socket():
+    # Create an IPv4 UDP socket from fd0, as passed by inetd
+    client = socket.fromfd(0, socket.AF_INET, socket.SOCK_DGRAM)
+    # Read up to MESSAGE_SIZE bytes from the client, and record the
+    # address so we can then connect to it
+    global addr
+    buf, addr = client.recvfrom(MESSAGE_SIZE)
+    client.connect(addr)
+   
+    return buf
+
+def ensure_version(buf):
+    vers = buf[0:len(MESSAGE_VERS)]
+    if MESSAGE_VERS != vers:
+        die('GMS bogus version [%s] from %s' % (vers, addr[0]))
+
+def get_message():
+    timestamp = 0
+    content = ''
+    try:
+        with open(MESSAGE_FILE, 'r') as msg:
+            content = msg.read()
+            timestamp = os.fstat(msg.fileno()).st_mtime
+    except IOError as e:
+        # If it's just ENOENT, there's no message, and that's fine
+        if e.errno != errno.ENOENT:
+            die('GMS daemon IO error [%s] reading message file <%s>' % \
+                    (os.strerror(e.errno), MESSAGE_FILE), exit_status=e.errno)
+    return (timestamp, content)
+
+if __name__ == '__main__':
+    try:
+        setup_syslog()
+        ensure_version(setup_socket())
+        timestamp, msg = get_message()
+
+        print "%s %ld\n%s" % (MESSAGE_VERS, timestamp, msg),
+    except IOError as e:
+        die('GMS daemon experienced an unexpected IO error: %s' % \
+                (os.strerror(e.errno)), exit_status=e.errno)
+    except:
+        # Some really weird condition happened
+        die('GMS daemon experienced an unknown failure')
+
